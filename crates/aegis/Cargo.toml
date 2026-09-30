@@ -10,3 +10,7 @@ name = "aegis"
 path = "src/main.rs"
 
 [dependencies]
+aegis-config.workspace = true
+aegis-inbound.workspace = true
+aegis-router.workspace = true
+tokio.workspace = true

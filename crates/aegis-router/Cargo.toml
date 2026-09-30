@@ -6,3 +6,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+aegis-config.workspace = true
+aegis-inbound.workspace = true
+aegis-outbound.workspace = true
+aegis-rules.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
