@@ -10,5 +10,11 @@ authors = ["Aegis Contributors"]
 
 [workspace.dependencies]
 # 依赖统一在此声明版本，crate 内用 `dep.workspace = true` 引用。
-# M0 起逐步引入：serde / tokio / thiserror / anyhow / ipnet / regex-automata / quinn / rustls / axum / rusqlite / ...
+# M0 起逐步引入：tokio / ipnet / quinn / rustls / axum / rusqlite / ...
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9" # 上游已归档但稳定；1.0 生态定型后再评估迁移
+thiserror = "2"
 regex = "1"
+
+# 内部 crate
+aegis-rules = { path = "crates/aegis-rules" }

@@ -27,7 +27,7 @@ pub mod expr;
 pub mod matcher;
 
 pub use cidr::IpCidr;
-pub use dsl::{parse_rule, ParsedRule};
+pub use dsl::{parse_rule, parse_target, ParsedRule};
 pub use matcher::{ConnCtx, Logical, Matcher, Protocol};
 
 use std::fmt;
