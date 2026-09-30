@@ -306,6 +306,20 @@ fn outbound(protocol: Protocol, node: &aegis_config::Node) -> Result<Outbound, S
             let key = aegis_outbound::ss2022::decode_key(method, &key_b64)?;
             Ok(Outbound::Ss2022 { proxy, method, key })
         }
+        Protocol::Trojan => {
+            let var = format!("AEGIS_KEY_{}", sanitize_env_ref(&node.key_ref));
+            let password = std::env::var(&var).map_err(|_| {
+                format!("未找到密码环境变量 {var}（M0 CLI 从环境注入；移动端由 Keychain 注入）")
+            })?;
+            Ok(Outbound::Trojan {
+                proxy,
+                password,
+                tls: aegis_outbound::trojan::TlsParams {
+                    sni: node.sni.clone(),
+                    skip_verify: node.skip_cert_verify,
+                },
+            })
+        }
         other => Err(format!(
             "协议 {} 尚未实现（M0 里程碑内陆续接入）",
             describe_protocol(other)

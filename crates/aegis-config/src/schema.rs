@@ -187,6 +187,12 @@ pub struct Node {
     /// 协议参数：如 shadowsocks-2022 的加密方法（2022-blake3-aes-128-gcm 等）
     #[serde(default)]
     pub method: Option<String>,
+    /// TLS SNI（trojan / vless 等 TLS 承载协议；缺省用 server 地址）
+    #[serde(default)]
+    pub sni: Option<String>,
+    /// 跳过证书校验（自签场景；默认 false，UI 需二次确认）
+    #[serde(rename = "skip-cert-verify", default)]
+    pub skip_cert_verify: bool,
     /// 凭据引用（如 `keychain://nodes/tokyo-01`），真实值运行期由平台 Keychain 注入
     #[serde(rename = "key-ref")]
     pub key_ref: String,

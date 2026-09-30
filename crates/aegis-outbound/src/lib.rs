@@ -9,10 +9,11 @@
 //! - [`Outbound::Ss2022`]：Shadowsocks 2022（SIP022）TCP 出站——
 //!   2022-blake3-aes-128-gcm / aes-256 / chacha20 三 AEAD，blake3 子密钥，
 //!   时间戳防重放；连接返回**加密流**（[`Transport`]）而非裸 TCP
+//! - [`Outbound::Trojan`]：Trojan（TLS 承载 + SHA224 密码哈希；rustls）
 //! - 全部接口对 `AsyncRead + AsyncWrite` 泛型化（真实 TcpStream 与测试 duplex 通用）
 //!
 //! 待办（后续迭代）：
-//! - trojan / vless+reality / wg（P0 协议矩阵剩余项，同样以 [`Transport`] 返回）
+//! - vless+reality / wg（P0 协议矩阵剩余项，同样以 [`Transport`] 返回）
 //! - SS2022 UDP（会话式，随 UDP 转发批次）
 //! - hysteria2 / tuic（P1，quinn QUIC）
 //! - HTTP 代理认证（Basic）；链式代理（P2）
@@ -22,6 +23,7 @@
 pub mod http;
 pub mod socks5;
 pub mod ss2022;
+pub mod trojan;
 
 use std::net::IpAddr;
 
@@ -90,6 +92,12 @@ pub enum Outbound {
         /// 只在内存中存续：配置文件里只有 key-ref，值运行期注入。
         key: Vec<u8>,
     },
+    Trojan {
+        proxy: Endpoint,
+        /// 明文密码（仅内存：SHA224 哈希后才上 TLS）
+        password: String,
+        tls: trojan::TlsParams,
+    },
 }
 
 impl Outbound {
@@ -108,6 +116,13 @@ impl Outbound {
             Outbound::Ss2022 { proxy, method, key } => ss2022::connect(proxy, *method, key, target)
                 .await
                 .map(|s| Box::new(s) as Transport),
+            Outbound::Trojan {
+                proxy,
+                password,
+                tls,
+            } => trojan::connect(proxy, password, tls, target)
+                .await
+                .map(|s| Box::new(s) as Transport),
         }
     }
 
@@ -120,6 +135,7 @@ impl Outbound {
             Outbound::Ss2022 { proxy, method, .. } => {
                 format!("ss2022({method})://{proxy}")
             }
+            Outbound::Trojan { proxy, .. } => format!("trojan://{proxy}"),
         }
     }
 }

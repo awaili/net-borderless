@@ -167,8 +167,8 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
-/// 目标地址（SOCKS5 地址格式：atyp + addr + port）。
-fn encode_addr(target: &Endpoint) -> Vec<u8> {
+/// 目标地址（SOCKS5 地址格式：atyp + addr + port）。trojan 同用此格式。
+pub(crate) fn encode_addr(target: &Endpoint) -> Vec<u8> {
     let mut v = Vec::with_capacity(1 + 255 + 2);
     match target.host.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => {

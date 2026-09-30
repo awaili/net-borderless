@@ -19,6 +19,13 @@ regex = "1"
 blake3 = "1"
 aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
+# TLS 栈（trojan / 后续 vless 承载）：rustls 全程 ring 后端（纯 Rust，跨平台含 iOS/Android）
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+webpki-roots = "0.26"
+sha2 = "0.10"
+# 测试用自签证书（trojan/vless 单元测试 + xray 互通冒烟）
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 base64 = "0.22"
 rand = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }

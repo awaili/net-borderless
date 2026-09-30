@@ -33,6 +33,13 @@ nodes:
     port: 8388
     method: 2022-blake3-aes-128-gcm   # 2022-blake3-aes-128-gcm | 2022-blake3-aes-256-gcm | 2022-blake3-chacha20-poly1305
     key-ref: keychain://nodes/tokyo-01
+  - id: seoul-01
+    protocol: trojan
+    server: example.kr
+    port: 443
+    sni: example.kr                   # TLS SNI（缺省用 server 地址）
+    skip-cert-verify: false           # 自签场景才开；UI 需二次确认
+    key-ref: keychain://nodes/seoul-01
   - id: osaka-02
     protocol: vless-reality
     server: example2.jp
@@ -54,7 +61,7 @@ groups:
     url: http://www.gstatic.com/generate_204   # 探活 URL；https 仅 TCP 探针（M0）
   - id: media
     type: select
-    members: [auto, tokyo-01]
+    members: [auto, tokyo-01, seoul-01]
 
 # ── 规则（PRD F2）─────────────────────────────────────
 rule-sets:
