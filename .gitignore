@@ -1,0 +1,19 @@
+target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 平台工程产物
+apps/desktop/src-tauri/target/
+apps/ios/build/
+apps/ios/DerivedData/
+apps/android/.gradle/
+apps/android/build/
+
+# 本地环境
+.env
+*.local.yaml

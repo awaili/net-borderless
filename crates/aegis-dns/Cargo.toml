@@ -1,0 +1,8 @@
+[package]
+name = "aegis-dns"
+description = "DNS 服务器、DoH/DoT/DoQ 上游、fake-ip 池、split-DNS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -1,0 +1,8 @@
+[package]
+name = "aegis-api"
+description = "本地 API：REST + WS，token 鉴权（UI/CLI 均通过它消费核心）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

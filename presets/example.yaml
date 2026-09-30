@@ -1,0 +1,68 @@
+# Aegis 配置样例（schema 活样例）
+#
+# 本文件是配置 schema 的"活文档"：schema 任何变更必须同步修改此文件（docs/05 §5）。
+# 字段为 M0 目标设计，随 aegis-config 实现逐步生效。
+
+version: 1
+
+# ── 入站 ─────────────────────────────────────────────
+inbound:
+  tun:                       # 全量接管模式（桌面/iOS）
+    enabled: true
+    dns-hijack: true         # :53 全部劫持到 aegis-dns
+  mixed:                     # 显式代理入站（http+socks5）
+    enabled: true
+    listen: 127.0.0.1:7890
+
+# ── DNS ──────────────────────────────────────────────
+# 防泄露：default 必须显式声明；未声明时引擎拒绝解析并发诊断警告，绝不回退系统 DNS
+dns:
+  mode: fake-ip              # direct | fake-ip
+  default: doh://1.1.1.1/dns-query
+  bootstrap: 1.1.1.1          # DoH 域名解析的引导 IP
+  split:                      # 与规则引擎联动：命中 PROXY 的域名解析走代理
+    - rule: media.ruleset
+      upstream: doh://8.8.8.8/dns-query
+
+# ── 节点与订阅 ────────────────────────────────────────
+# 凭据（password/uuid/private-key）运行时由 Keychain 引用注入，配置文件只存引用 ID
+nodes:
+  - id: tokyo-01
+    protocol: shadowsocks-2022
+    server: example.jp
+    port: 8388
+    key-ref: keychain://nodes/tokyo-01
+  - id: osaka-02
+    protocol: vless-reality
+    server: example2.jp
+    port: 443
+    key-ref: keychain://nodes/osaka-02
+
+subscriptions:
+  - id: my-provider
+    url: https://example.com/sub                  # 运行时从 Keychain 取完整 URL
+    signature: minisign-ed25519:provider.pub     # P1：签名清单，防篡改
+
+# ── 策略组（PRD F3）───────────────────────────────────
+groups:
+  - id: auto
+    type: url-test             # select | url-test | fallback | load-balance | smart(P1)
+    members: [tokyo-01, osaka-02]
+    interval: 300s
+    tolerance: 50ms            # 容忍度内不切换，防抖动
+  - id: media
+    type: select
+    members: [auto, tokyo-01]
+
+# ── 规则（PRD F2）─────────────────────────────────────
+rule-sets:
+  - id: media.ruleset          # 远程规则集，带版本 + Ed25519 签名
+    url: https://rulesets.aegis.dev/media/v3.bin
+    signature: ed25519:AAAA...
+
+rules:
+  - AND((DOMAIN-SUFFIX,netflix.com), NOT(IP-CIDR,10.0.0.0/8)) -> media
+  - RULE-SET,media.ruleset -> media
+  - GEOIP,CN -> DIRECT
+
+final: REJECT                  # 兜底必须显式声明；REJECT 会出现在诊断建议中

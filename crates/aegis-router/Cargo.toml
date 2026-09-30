@@ -1,0 +1,8 @@
+[package]
+name = "aegis-router"
+description = "连接编排：嗅探、规则匹配调用、策略组、探活调度与自动摘除回融"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

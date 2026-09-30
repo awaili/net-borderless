@@ -1,0 +1,8 @@
+[package]
+name = "aegis-diag"
+description = "一键诊断流水线（8 项 checklist）、泄露检测、流媒体解锁检测、健康分"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -1,0 +1,8 @@
+[package]
+name = "aegis-observe"
+description = "可观测性：连接表（slab）、流量聚合（SQLite）、指标 EWMA、诊断报告存储"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

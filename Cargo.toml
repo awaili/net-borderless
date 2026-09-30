@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["Aegis Contributors"]
+
+[workspace.dependencies]
+# 依赖统一在此声明版本，crate 内用 `dep.workspace = true` 引用。
+# M0 起逐步引入：serde / tokio / thiserror / anyhow / ipnet / regex-automata / quinn / rustls / axum / rusqlite / ...

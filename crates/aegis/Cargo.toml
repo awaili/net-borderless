@@ -1,0 +1,12 @@
+[package]
+name = "aegis"
+description = "Aegis 二进制：CLI 与无头守护进程（聚合核心引擎全部 crate）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aegis"
+path = "src/main.rs"
+
+[dependencies]

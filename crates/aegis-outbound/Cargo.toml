@@ -1,0 +1,8 @@
+[package]
+name = "aegis-outbound"
+description = "出站协议栈：ss2022/trojan/vless+reality/wg/hy2/tuic/http/socks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

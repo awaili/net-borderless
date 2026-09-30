@@ -1,0 +1,8 @@
+[package]
+name = "aegis-rules"
+description = "规则引擎：域名 trie、LPM、逻辑表达式、规则集加载与签名校验"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
