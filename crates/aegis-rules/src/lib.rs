@@ -8,15 +8,17 @@
 //!   以及嵌套逻辑表达式 AND / OR / NOT（[`Logical`]）
 //! - 规则 DSL 解析（[`dsl::parse_rule`]）：
 //!   `AND((DOMAIN-SUFFIX,netflix.com), NOT(IP-CIDR,10.0.0.0/8)) -> media`
-//! - [`CompiledRules`]：顺序求值 + 每条规则命中计数（喂给 aegis-diag 的学习式建议
+//! - [`CompiledRules`]：首中语义 + 每条规则命中计数（喂给 aegis-diag 的学习式建议
 //!   与 UI 的规则排序）；兜底 `fallback` 必须由调用方显式传入
 //!   （aegis-config 强制 final 必填，未写默认 REJECT 并产生诊断建议）
+//! - 域名 trie 编译优化（M0 后续批次）：DOMAIN / DOMAIN-SUFFIX 编译期进
+//!   [`trie::DomainTrie`]（反转标签），运行期一次查询替代顺序扫描，
+//!   结果与顺序扫描按下标取 min——行为与纯顺序扫描严格等价，
+//!   10 万规则 p99 < 50µs 验收门（`perf_gate_100k_rules_p99_under_50us` 强制）
 //!
 //! 待办（后续迭代）：
 //! - `ruleset/`：远程规则集加载、Ed25519 签名校验、版本与增量更新
 //!   （`Matcher::RuleSetRef` 当前是引用桩，由配置层展开后运行期不再出现）
-//! - 域名 trie 编译优化（当前为顺序求值；10 万规则集 p99 < 50µs 的验收门
-//!   需 trie + criterion 基准驱动，见 docs/02 §8）
 //! - fuzz：DSL 解析器与匹配器进 CI
 //!
 //! 热路径约定：`Matcher::matches` 零堆分配。
@@ -25,6 +27,7 @@ pub mod cidr;
 pub mod dsl;
 pub mod expr;
 pub mod matcher;
+mod trie;
 
 pub use cidr::IpCidr;
 pub use dsl::{parse_rule, parse_target, ParsedRule};
@@ -51,7 +54,13 @@ pub struct MatchResult {
 /// 编译后的规则集：加载期构建一次，运行期只读（命中计数除外）。
 #[derive(Debug)]
 pub struct CompiledRules {
+    /// 按原始下标存放全部规则（target / 命中计数 / 条件）
     rules: Vec<CompiledRule>,
+    /// 非 trie 规则的下标表（升序）——顺序扫描只走这里，
+    /// 域名规则全进 trie 后 miss 路径不随规则数线性增长
+    seq: Vec<usize>,
+    /// DOMAIN / DOMAIN-SUFFIX 的编译期 trie（快路径，见模块文档）
+    trie: trie::DomainTrie,
     fallback: Target,
 }
 
@@ -65,6 +74,15 @@ struct CompiledRule {
 impl CompiledRules {
     /// `rules` 按顺序求值，首个命中生效；`fallback` 为显式兜底目标。
     pub fn build(rules: Vec<ParsedRule>, fallback: Target) -> Self {
+        let mut trie = trie::DomainTrie::default();
+        let mut seq = Vec::new();
+        for (idx, r) in rules.iter().enumerate() {
+            match &r.condition {
+                Matcher::DomainExact(d) => trie.insert_exact(d, idx),
+                Matcher::DomainSuffix(s) => trie.insert_suffix(s, idx),
+                _ => seq.push(idx),
+            }
+        }
         Self {
             rules: rules
                 .into_iter()
@@ -74,23 +92,37 @@ impl CompiledRules {
                     hits: AtomicU64::new(0),
                 })
                 .collect(),
+            seq,
+            trie,
             fallback,
         }
     }
 
+    /// 求值：与纯顺序扫描严格等价。trie 一次查询给出所有命中域名规则的
+    /// 最小下标；顺序扫描只看非域名规则，且到该下标即截断。
     pub fn matches(&self, ctx: &ConnCtx) -> MatchResult {
-        for (idx, rule) in self.rules.iter().enumerate() {
-            if rule.condition.matches(ctx) {
-                rule.hits.fetch_add(1, Ordering::Relaxed);
-                return MatchResult {
-                    target: rule.target.clone(),
-                    rule_index: Some(idx),
-                };
+        let mut best: Option<usize> = ctx.domain.and_then(|d| self.trie.lookup(d));
+        for &idx in &self.seq {
+            if best.is_some_and(|b| idx >= b) {
+                break; // 顺序扫描不可能给出更小下标了
+            }
+            if self.rules[idx].condition.matches(ctx) {
+                best = Some(idx);
+                break;
             }
         }
-        MatchResult {
-            target: self.fallback.clone(),
-            rule_index: None,
+        match best {
+            Some(idx) => {
+                self.rules[idx].hits.fetch_add(1, Ordering::Relaxed);
+                MatchResult {
+                    target: self.rules[idx].target.clone(),
+                    rule_index: Some(idx),
+                }
+            }
+            None => MatchResult {
+                target: self.fallback.clone(),
+                rule_index: None,
+            },
         }
     }
 
@@ -342,20 +374,92 @@ mod tests {
         );
     }
 
-    /// 性能冒烟：10 万条后缀规则构建 + 单次匹配（不设硬性断言，正式基准见 docs/02 §8）。
     #[test]
-    fn perf_smoke_100k_rules() {
+    fn trie_and_sequential_equivalence() {
+        // trie 规则（DOMAIN/SUFFIX）与顺序规则（KEYWORD/PORT）交错，
+        // 首中语义必须与纯顺序扫描严格一致
+        let r = rules(
+            &[
+                "DOMAIN-KEYWORD,evil -> blocked",      // 0
+                "DOMAIN-SUFFIX,good.com -> proxy",     // 1
+                "PORT,443 -> tls",                     // 2
+                "DOMAIN,exact.good.com -> direct",     // 3
+                "DOMAIN-SUFFIX,deep.good.com -> deep", // 4
+            ],
+            Target::Reject,
+        );
+        // keyword（idx 0）优先于后缀（idx 1）
+        assert_eq!(
+            r.matches(&ctx(Some("evil.good.com"), None)).rule_index,
+            Some(0)
+        );
+        // 后缀（idx 1）优先于端口（idx 2）与更深后缀（idx 4）
+        assert_eq!(
+            r.matches(&ctx(Some("sub.deep.good.com"), None)).rule_index,
+            Some(1)
+        );
+        // "exact.good.com" 同时命中后缀（idx 1）与精确（idx 3）→ 首中取 1，
+        // 与纯顺序扫描一致（端口规则 idx 2 也命中但被越过）
+        assert_eq!(
+            r.matches(&ctx(Some("exact.good.com"), None)).rule_index,
+            Some(1)
+        );
+        // 精确规则在前时取胜：单独场景验证
+        let r2 = rules(
+            &[
+                "DOMAIN,exact.good.com -> direct",
+                "DOMAIN-SUFFIX,good.com -> proxy",
+            ],
+            Target::Reject,
+        );
+        assert_eq!(
+            r2.matches(&ctx(Some("exact.good.com"), None)).rule_index,
+            Some(0)
+        );
+        assert_eq!(
+            r2.matches(&ctx(Some("other.good.com"), None)).rule_index,
+            Some(1)
+        );
+        // 无域名时端口规则照常（trie 跳过）
+        assert_eq!(r.matches(&ctx(None, None)).rule_index, Some(2));
+        // 未命中且端口不匹配 → 兜底（ctx helper 固定 443，绕开 PORT 规则）
+        let mut c = ConnCtx::new(None, 80);
+        c.domain = Some("other.org");
+        assert_eq!(r.matches(&c).rule_index, None);
+    }
+
+    /// M0 性能门（docs/02 §8）：10 万条域名规则，p99 求值 < 50µs。
+    /// trie 快路径使域名查询与规则数无关；50µs 预算宽裕，CI 抖动下也稳定。
+    #[test]
+    fn perf_gate_100k_rules_p99_under_50us() {
         let parsed: Vec<ParsedRule> = (0..100_000)
             .map(|i| parse_rule(&format!("DOMAIN-SUFFIX,host{i}.example.com -> g{i}")).unwrap())
             .collect();
         let r = CompiledRules::build(parsed, Target::Reject);
         assert_eq!(r.len(), 100_000);
 
-        let ctx = ctx(Some("host99999.example.com"), None);
-        let t = std::time::Instant::now();
-        let m = r.matches(&ctx);
-        let elapsed = t.elapsed();
-        assert_eq!(m.rule_index, Some(99_999));
-        println!("100k 顺序求值: {elapsed:?}");
+        // 混合命中/未命中域名，各 1000 次求值取 p99
+        let mut samples = Vec::with_capacity(2000);
+        for i in 0..1000 {
+            let d_hit = format!("deep.host{i}.example.com");
+            let d_miss = format!("host{i}.nowhere.example.com");
+            for (c, expect_hit) in [
+                (ctx(Some(&d_hit), None), true),
+                (ctx(Some(&d_miss), None), false),
+            ] {
+                let t = std::time::Instant::now();
+                let m = r.matches(&c);
+                samples.push(t.elapsed().as_nanos() as u64);
+                assert_eq!(
+                    m.rule_index.is_some(),
+                    expect_hit,
+                    "命中/未命中判定与预期不符"
+                );
+            }
+        }
+        samples.sort_unstable();
+        let p99 = samples[(samples.len() as f64 * 0.99) as usize];
+        println!("100k 规则求值 p99: {p99}ns（门槛 50µs）");
+        assert!(p99 < 50_000, "10 万规则 p99 {p99}ns 超出 50µs 验收门");
     }
 }
