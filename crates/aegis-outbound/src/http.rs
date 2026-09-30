@@ -147,10 +147,10 @@ mod tests {
             proxy: Endpoint::new("127.0.0.1", addr.port()),
             auth: None,
         };
-        let err = out
-            .connect(&Endpoint::new("example.com", 443))
-            .await
-            .unwrap_err();
+        let err = match out.connect(&Endpoint::new("example.com", 443)).await {
+            Ok(_) => panic!("407 应当报错"),
+            Err(e) => e,
+        };
         assert!(err.to_string().contains("非 2xx"));
         server.await.unwrap();
     }

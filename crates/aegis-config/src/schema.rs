@@ -184,6 +184,9 @@ pub struct Node {
     pub protocol: Protocol,
     pub server: String,
     pub port: u16,
+    /// 协议参数：如 shadowsocks-2022 的加密方法（2022-blake3-aes-128-gcm 等）
+    #[serde(default)]
+    pub method: Option<String>,
     /// 凭据引用（如 `keychain://nodes/tokyo-01`），真实值运行期由平台 Keychain 注入
     #[serde(rename = "key-ref")]
     pub key_ref: String,

@@ -57,6 +57,8 @@ pub enum ConfigError {
     BadListen(String),
     #[error("兜底目标非法: {0}")]
     BadFinal(#[source] aegis_rules::ParseError),
+    #[error("节点 {0} 缺少 method（shadowsocks-2022 必须声明加密方法）")]
+    NodeNeedsMethod(String),
 }
 
 impl Profile {
@@ -124,6 +126,13 @@ impl Profile {
         check_dup("策略组", self.groups.iter().map(|g| g.id.as_str()))?;
         check_dup("订阅", self.subscriptions.iter().map(|s| s.id.as_str()))?;
         check_dup("规则集", self.rule_sets.iter().map(|r| r.id.as_str()))?;
+
+        // 协议必填参数：shadowsocks-2022 必须声明加密方法（方法决定密钥长度）
+        for n in &self.nodes {
+            if n.protocol == Protocol::Shadowsocks2022 && n.method.is_none() {
+                return Err(ConfigError::NodeNeedsMethod(n.id.clone()));
+            }
+        }
 
         let node_ids: HashSet<&str> = self.nodes.iter().map(|n| n.id.as_str()).collect();
         let group_map: HashMap<&str, &Group> =

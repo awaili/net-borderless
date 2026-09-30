@@ -90,14 +90,10 @@ impl Router {
         let mut skipped_nodes = Vec::new();
         for n in &profile.nodes {
             match outbound(n.protocol, n) {
-                Some(o) => {
+                Ok(o) => {
                     outbound_by_node.insert(n.id.as_str(), o);
                 }
-                None => skipped_nodes.push(format!(
-                    "{}（协议 {} 尚未实现，被跳过）",
-                    n.id,
-                    describe_protocol(n.protocol)
-                )),
+                Err(reason) => skipped_nodes.push(format!("{}: {reason}", n.id)),
             }
         }
 
@@ -290,13 +286,46 @@ fn expand_member<'a>(
     }
 }
 
-fn outbound(protocol: Protocol, node: &aegis_config::Node) -> Option<Outbound> {
+/// 节点 → 出站连接器。`Err(原因)` = build 期跳过并记录（不静默）。
+fn outbound(protocol: Protocol, node: &aegis_config::Node) -> Result<Outbound, String> {
     let proxy = Endpoint::new(node.server.clone(), node.port);
     match protocol {
-        Protocol::Http => Some(Outbound::Http { proxy, auth: None }),
-        Protocol::Socks5 => Some(Outbound::Socks5 { proxy, auth: None }),
-        _ => None,
+        Protocol::Http => Ok(Outbound::Http { proxy, auth: None }),
+        Protocol::Socks5 => Ok(Outbound::Socks5 { proxy, auth: None }),
+        Protocol::Shadowsocks2022 => {
+            // 密钥注入（M0 CLI 桥）：AEGIS_KEY_<REF>（非字母数字→下划线，大写）。
+            // 移动端由 FFI/Keychain 注入（PRD F7），环境变量桥仅限桌面 CLI。
+            let Some(method_str) = node.method.as_deref() else {
+                return Err("ss2022 节点缺少 method（配置层本应拦截）".into());
+            };
+            let method = aegis_outbound::ss2022::Ss2022Method::parse(method_str)?;
+            let var = format!("AEGIS_KEY_{}", sanitize_env_ref(&node.key_ref));
+            let key_b64 = std::env::var(&var).map_err(|_| {
+                format!("未找到密钥环境变量 {var}（M0 CLI 从环境注入；移动端由 Keychain 注入）")
+            })?;
+            let key = aegis_outbound::ss2022::decode_key(method, &key_b64)?;
+            Ok(Outbound::Ss2022 { proxy, method, key })
+        }
+        other => Err(format!(
+            "协议 {} 尚未实现（M0 里程碑内陆续接入）",
+            describe_protocol(other)
+        )),
     }
+}
+
+/// key-ref → 环境变量名段：非字母数字转下划线后大写。
+/// 例：`keychain://nodes/tokyo-01` → `KEYCHAIN__NODES_TOKYO_01`
+fn sanitize_env_ref(key_ref: &str) -> String {
+    key_ref
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn describe_protocol(p: Protocol) -> &'static str {
@@ -384,6 +413,44 @@ mod tests {
             })
         );
         assert_eq!(r.resolve(&Target::Group("missing".into())), None);
+    }
+
+    /// ss2022 节点映射：env 密钥桥（AEGIS_KEY_<REF>）注入 + 缺密钥时给出
+    /// 人读跳过原因（不静默）。用独立 key-ref 避免与其他测试的 env 串扰。
+    #[test]
+    fn ss2022_node_env_key_bridge() {
+        std::env::set_var("AEGIS_KEY_SS2022_MAP", "BwcHBwcHBwcHBwcHBwcHBw==");
+        let cfg = r#"
+version: 1
+nodes:
+  - {id: s1, protocol: shadowsocks-2022, server: 127.0.0.1, port: 8388, method: 2022-blake3-aes-128-gcm, key-ref: ss2022-map}
+  - {id: s2, protocol: shadowsocks-2022, server: 127.0.0.1, port: 8389, method: 2022-blake3-aes-128-gcm, key-ref: no-such-key}
+groups:
+  - {id: g, type: select, members: [s1, s2]}
+final: g
+"#;
+        let p = Profile::from_yaml_str(cfg).unwrap();
+        let r = Router::build(&p).unwrap();
+        // s1 经 env 密钥映射成功
+        assert_eq!(
+            r.resolve(&Target::Group("g".into())),
+            Some(Outbound::Ss2022 {
+                proxy: Endpoint::new("127.0.0.1", 8388),
+                method: aegis_outbound::ss2022::Ss2022Method::Aes128Gcm,
+                key: vec![7u8; 16],
+            })
+        );
+        // s2 缺密钥：跳过 + 明确原因
+        assert_eq!(r.skipped_nodes().len(), 1);
+        assert!(r.skipped_nodes()[0].contains("AEGIS_KEY_NO_SUCH_KEY"));
+        std::env::remove_var("AEGIS_KEY_SS2022_MAP");
+    }
+
+    #[test]
+    fn ss2022_without_method_is_config_error() {
+        let cfg = "version: 1\nnodes:\n  - {id: s, protocol: shadowsocks-2022, server: 127.0.0.1, port: 8388, key-ref: k}\n";
+        let err = Profile::from_yaml_str(cfg).unwrap_err();
+        assert!(err.to_string().contains("method"));
     }
 
     #[test]

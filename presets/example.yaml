@@ -31,6 +31,7 @@ nodes:
     protocol: shadowsocks-2022
     server: example.jp
     port: 8388
+    method: 2022-blake3-aes-128-gcm   # 2022-blake3-aes-128-gcm | 2022-blake3-aes-256-gcm | 2022-blake3-chacha20-poly1305
     key-ref: keychain://nodes/tokyo-01
   - id: osaka-02
     protocol: vless-reality
