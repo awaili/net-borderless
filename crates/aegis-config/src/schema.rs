@@ -229,6 +229,10 @@ pub struct Group {
     /// url-test 容忍度（组内延迟差小于此值不切换，防抖动），默认 50ms
     #[serde(default)]
     pub tolerance: Option<Dur>,
+    /// 探活 URL（http:// 即 TCP+HTTP 首字节双探针；https:// 仅 TCP 连接探针，
+    /// M0 无 TLS 探活）。缺省 http://www.gstatic.com/generate_204
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

@@ -50,6 +50,7 @@ groups:
     members: [tokyo-01, osaka-02]
     interval: 300s
     tolerance: 50ms            # 容忍度内不切换，防抖动
+    url: http://www.gstatic.com/generate_204   # 探活 URL；https 仅 TCP 探针（M0）
   - id: media
     type: select
     members: [auto, tokyo-01]

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use aegis_config::Profile;
 use aegis_inbound::read_request;
-use aegis_router::Router;
+use aegis_router::{ProberEvent, Router};
 use tokio::net::{TcpListener, TcpStream};
 
 fn main() -> ExitCode {
@@ -73,6 +73,45 @@ async fn run(config: &str) -> Result<(), Box<dyn std::error::Error>> {
     for skipped in router.skipped_nodes() {
         println!("  ⚠ 节点被跳过: {skipped}");
     }
+    for g in router.group_statuses() {
+        println!(
+            "  组 {}（{}）当前: {}",
+            g.id,
+            group_type_name(g.group_type),
+            g.current.as_deref().unwrap_or("(空)")
+        );
+    }
+
+    // 探活调度：事件打印到 stdout（aegis-observe 接入前的临时观测）
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let probers = router.start_probers(tx);
+    if !probers.is_empty() {
+        println!("探活调度已启动（{} 个组）", probers.len());
+    }
+    tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                ProberEvent::Switched {
+                    group,
+                    from,
+                    to,
+                    reason,
+                } => {
+                    println!("  ⟳ 组 {group}: {from} → {to}（{reason}）");
+                }
+                ProberEvent::Removed {
+                    group,
+                    member,
+                    error,
+                } => {
+                    println!("  ✗ 组 {group} 摘除 {member}: {error}");
+                }
+                ProberEvent::Revived { group, member, rtt } => {
+                    println!("  ✓ 组 {group} 回融 {member}（{}ms）", rtt.as_millis());
+                }
+            }
+        }
+    });
 
     let listen = match (profile.inbound.mixed.enabled, &profile.inbound.mixed.listen) {
         (true, Some(l)) => l.clone(),
@@ -133,5 +172,15 @@ fn humanize(n: u64) -> String {
         format!("{n}B")
     } else {
         format!("{v:.1}{}", UNITS[u])
+    }
+}
+
+fn group_type_name(t: aegis_config::GroupType) -> &'static str {
+    match t {
+        aegis_config::GroupType::Select => "select",
+        aegis_config::GroupType::UrlTest => "url-test",
+        aegis_config::GroupType::Fallback => "fallback",
+        aegis_config::GroupType::LoadBalance => "load-balance",
+        aegis_config::GroupType::Smart => "smart",
     }
 }

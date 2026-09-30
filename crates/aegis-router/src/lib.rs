@@ -2,35 +2,43 @@
 //!
 //! 连接编排层（PRD F3 / 架构 L2）——核心引擎的心脏。
 //!
-//! 已实现（M0 第三批，最小闭环）：
+//! 已实现（M0 第四批，最小闭环 + 策略组选路）：
 //! - [`Router::build`]：从 [`aegis_config::Profile`] 构建路由器
-//!   （规则编译 + 节点映射为出站连接器 + 策略组**展开**为扁平出站序列）
+//!   （规则编译 + 节点映射为出站连接器 + 策略组展开为 [`group::GroupRuntime`]）
 //! - [`Router::route`]：规则求值；[`Router::resolve`]：目标 → 出站连接器
-//!   （M0 策略组一律取首个可用成员；url-test/fallback/load-balance/smart
-//!   的探活选路是下一批——见 `prober/` 待办）
+//!   （五种组类型语义见 [`group`] 模块文档）
 //! - [`Router::handle`]：单连接完整编排——建上下文 → 规则求值 → 出站连接 →
 //!   入站应答 → 双向拷贝（带字节计数）→ [`ConnReport`]（连接报告，
 //!   aegis-observe 接入前的临时观测形态，bin 直接打印）
+//! - [`Router::start_probers`]：拉起每组探活调度（[`prober`] 模块），
+//!   事件推流给观测层
 //! - 不支持的出站协议在 build 期跳过并记录（不静默：bin 会打印提示）
 //!
 //! 待办（后续迭代）：
 //! - `sniffer/`：首包嗅探（SNI / HTTP host / QUIC SNI）——M0 阶段域名来自
 //!   代理协议本身，无需嗅探
-//! - `prober/`：探活调度器（双探针 + 摘除回融，PRD F3 全部行为）
-//! - `group/`：url-test / fallback / load-balance / smart 选路逻辑
+//! - smart 组的 P1 选路（当前同 fallback）
 //! - `session/`：连接池与 mux 复用
 //! - 事件推送：经 aegis-observe 的 `EventSink` 单向推流（当前 ConnReport 由
-//!   调用方同步取回）
+//!   调用方同步取回、探活事件走 mpsc 临时通道）
+
+pub mod group;
+pub mod prober;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use aegis_config::{ConfigError, Profile, Protocol};
+use aegis_config::{ConfigError, GroupType, Profile, Protocol};
 use aegis_inbound::Via;
 use aegis_outbound::{Endpoint, Outbound, OutboundError};
 use aegis_rules::{CompiledRules, ConnCtx, MatchResult, Target};
 use tokio::io::copy_bidirectional;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::mpsc::UnboundedSender;
+
+pub use group::{GroupRuntime, GroupStatus, MemberStatus};
+pub use prober::ProberEvent;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RouterError {
@@ -40,6 +48,8 @@ pub enum RouterError {
     NoOutbound(String),
     #[error("分流决策为 REJECT: {0}")]
     Rejected(String),
+    #[error("策略组错误: {0}")]
+    Group(String),
     #[error(transparent)]
     Outbound(#[from] OutboundError),
     #[error("入站协议错误: {0}")]
@@ -66,8 +76,8 @@ pub struct ConnReport {
 #[derive(Debug)]
 pub struct Router {
     rules: CompiledRules,
-    /// 组 id → 展开后的出站序列（首 个可用成员生效——M0 行为）
-    groups: HashMap<String, Vec<Outbound>>,
+    /// 组 id → 组运行时（选路语义与探活状态在 [`group::GroupRuntime`]）
+    groups: HashMap<String, Arc<GroupRuntime>>,
     /// build 期被跳过的节点（协议尚未实现），供诊断/启动日志展示
     skipped_nodes: Vec<String>,
     total_conns: AtomicU64,
@@ -91,17 +101,29 @@ impl Router {
             }
         }
 
-        // 策略组展开为扁平出站序列（嵌套组递归展开；配置层已校验无环，
-        // 这里的 visited 是防御性兜底）
+        // 策略组展开为扁平成员序列（嵌套组递归展开；配置层已校验无环，
+        // 这里的 visited 是防御性兜底），再包成 GroupRuntime（选路语义 + 探活状态）
         let mut groups = HashMap::new();
         for g in &profile.groups {
-            let mut out = Vec::new();
+            let mut members = Vec::new();
             let mut visited: HashSet<&str> = HashSet::new();
             visited.insert(g.id.as_str());
             for m in &g.members {
-                expand_member(m, profile, &outbound_by_node, &mut out, &mut visited);
+                expand_member(m, profile, &outbound_by_node, &mut members, &mut visited);
             }
-            groups.insert(g.id.clone(), out);
+            groups.insert(
+                g.id.clone(),
+                Arc::new(GroupRuntime::new(
+                    g.id.clone(),
+                    g.group_type,
+                    members,
+                    g.url
+                        .clone()
+                        .unwrap_or_else(|| group::DEFAULT_PROBE_URL.into()),
+                    g.interval.map(|d| d.0).unwrap_or(group::DEFAULT_INTERVAL),
+                    g.tolerance.map(|d| d.0).unwrap_or(group::DEFAULT_TOLERANCE),
+                )),
+            );
         }
 
         Ok(Self {
@@ -129,13 +151,68 @@ impl Router {
     /// 分流目标 → 出站连接器。
     ///
     /// REJECT 与无可用成员的组返回 `None`（调用方应向客户端回复失败并关闭）。
-    /// M0：所有组类型都取首个可用成员（url-test 等探活选路为下一批）。
+    /// 组内选中语义见 [`group::GroupRuntime::pick`]。
     pub fn resolve(&self, target: &Target) -> Option<Outbound> {
         match target {
             Target::Direct => Some(Outbound::Direct),
             Target::Reject => None,
-            Target::Group(id) => self.groups.get(id)?.first().cloned(),
+            Target::Group(id) => {
+                let g = self.groups.get(id)?;
+                let i = g.pick()?;
+                g.members.get(i).map(|m| m.outbound.clone())
+            }
         }
+    }
+
+    /// 手动锁定组选中（UI 手动切换入口；对 url-test 组锁定即停止自动切换）。
+    pub fn set_manual(&self, group_id: &str, member_id: &str) -> Result<(), RouterError> {
+        let g = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| RouterError::Group(format!("策略组不存在: {group_id}")))?;
+        g.set_manual(member_id).map_err(RouterError::Group)
+    }
+
+    /// 所有组的快照（状态页/诊断展示用），按组 id 排序。
+    pub fn group_statuses(&self) -> Vec<GroupStatus> {
+        let mut v: Vec<_> = self
+            .groups
+            .values()
+            .map(|g| {
+                let states = g.states.read().unwrap();
+                GroupStatus {
+                    id: g.id().to_string(),
+                    group_type: g.group_type,
+                    current: g.current_member().map(|m| m.id.clone()),
+                    members: g
+                        .members
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| MemberStatus {
+                            id: m.id.clone(),
+                            rtt: states.get(i).and_then(|s| s.rtt),
+                            alive: states.get(i).is_some_and(|s| s.alive),
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
+    /// 拉起探活调度（每组一个任务，select 组不探活）。
+    /// 返回任务句柄（调用方持有即可保活，abort 即停）。
+    /// 事件经 `tx` 推流；接收方退出（tx 失效）时调度任务自然结束。
+    pub fn start_probers(
+        &self,
+        tx: UnboundedSender<ProberEvent>,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        self.groups
+            .values()
+            .filter(|g| g.group_type != GroupType::Select && !g.members.is_empty())
+            .map(|g| tokio::spawn(prober::run_group(g.clone(), tx.clone())))
+            .collect()
     }
 
     /// 单连接完整编排。`inbound` 是已完成请求解析的客户端流。
@@ -181,20 +258,26 @@ impl Router {
     }
 }
 
-/// 组成员递归展开。
+/// 组成员递归展开（扁平化：嵌套组的成员并入本组，叶子 id 保留）。
 fn expand_member<'a>(
     member: &str,
     profile: &'a Profile,
     outbound_by_node: &HashMap<&str, Outbound>,
-    out: &mut Vec<Outbound>,
+    out: &mut Vec<group::Member>,
     visited: &mut HashSet<&'a str>,
 ) {
     match member {
-        "DIRECT" => out.push(Outbound::Direct),
+        "DIRECT" => out.push(group::Member {
+            id: "DIRECT".into(),
+            outbound: Outbound::Direct,
+        }),
         "REJECT" => {} // REJECT 成员：组内跳过（组级 REJECT 由规则引擎 Target 表达）
         _ => {
             if let Some(o) = outbound_by_node.get(member) {
-                out.push(o.clone());
+                out.push(group::Member {
+                    id: member.to_string(),
+                    outbound: o.clone(),
+                });
             } else if let Some(sub) = profile.group(member) {
                 if visited.insert(sub.id.as_str()) {
                     for m in &sub.members {
@@ -267,18 +350,21 @@ mod tests {
         let r = router();
         // 嵌套组展开为扁平序列，未实现协议（trojan）被跳过
         let outer = r.groups.get("g_outer").unwrap();
+        let ids: Vec<&str> = outer.members.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["n1", "n2"]);
         assert_eq!(
-            outer,
-            &vec![
-                Outbound::Socks5 {
-                    proxy: Endpoint::new("127.0.0.1", 1080),
-                    auth: None
-                },
-                Outbound::Http {
-                    proxy: Endpoint::new("10.0.0.1", 8080),
-                    auth: None
-                },
-            ]
+            outer.members[0].outbound,
+            Outbound::Socks5 {
+                proxy: Endpoint::new("127.0.0.1", 1080),
+                auth: None
+            }
+        );
+        assert_eq!(
+            outer.members[1].outbound,
+            Outbound::Http {
+                proxy: Endpoint::new("10.0.0.1", 8080),
+                auth: None
+            }
         );
         assert_eq!(r.skipped_nodes().len(), 1);
         assert!(r.skipped_nodes()[0].contains("n3"));
@@ -289,7 +375,7 @@ mod tests {
         let r = router();
         assert_eq!(r.resolve(&Target::Direct), Some(Outbound::Direct));
         assert_eq!(r.resolve(&Target::Reject), None);
-        // 组 → 首个可用成员
+        // select 组默认首个成员
         assert_eq!(
             r.resolve(&Target::Group("g_outer".into())),
             Some(Outbound::Socks5 {
@@ -298,6 +384,36 @@ mod tests {
             })
         );
         assert_eq!(r.resolve(&Target::Group("missing".into())), None);
+    }
+
+    #[test]
+    fn manual_selection_via_router() {
+        let r = router();
+        // 手动锁定到 n2，解锁后停在 n2
+        r.set_manual("g_outer", "n2").unwrap();
+        assert_eq!(
+            r.resolve(&Target::Group("g_outer".into())),
+            Some(Outbound::Http {
+                proxy: Endpoint::new("10.0.0.1", 8080),
+                auth: None
+            })
+        );
+        let g = r.groups.get("g_outer").unwrap();
+        g.clear_manual();
+        assert_eq!(g.current_member().map(|m| m.id.as_str()), Some("n2"));
+        // 未知组/未知成员 → 错误
+        assert!(r.set_manual("nope", "n1").is_err());
+        assert!(r.set_manual("g_outer", "nope").is_err());
+    }
+
+    #[test]
+    fn group_statuses_snapshot() {
+        let r = router();
+        let s = r.group_statuses();
+        let outer = s.iter().find(|g| g.id == "g_outer").unwrap();
+        assert_eq!(outer.current.as_deref(), Some("n1"));
+        assert_eq!(outer.members.len(), 2);
+        assert!(outer.members.iter().all(|m| !m.alive)); // 尚未探活
     }
 
     #[test]
