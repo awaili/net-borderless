@@ -11,3 +11,4 @@ authors = ["Aegis Contributors"]
 [workspace.dependencies]
 # 依赖统一在此声明版本，crate 内用 `dep.workspace = true` 引用。
 # M0 起逐步引入：serde / tokio / thiserror / anyhow / ipnet / regex-automata / quinn / rustls / axum / rusqlite / ...
+regex = "1"
