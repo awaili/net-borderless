@@ -177,12 +177,17 @@
 
 ## 9. 发行与商业模式
 
-- **开源策略**：核心引擎 GPL-3.0（防闭源分叉），规则集格式与诊断 SDK 宽松许可（MIT）；桌面端 GUI 开源；iOS/Android 端闭源收费（核心仍开源可复现）。
+- **开源策略**：核心引擎 GPL-3.0（防闭源分叉），规则集格式与诊断 SDK 宽松许可（MIT）；桌面端 CLI 开源；Android / iOS App 闭源收费（核心仍开源可复现）。
+- **平台优先级（v0.2 变更）**：Android 与 iOS 为 1.0 硬性交付物，移动优先；桌面端 1.0 仅交付 CLI，桌面 GUI 视用户信号列入 1.x。
 - **定价**（对齐并略高于 Shadowrocket，远低于 Surge）：
-  - 桌面端：免费开源（获客与口碑入口）。
+  - Android：买断 $4.99（Play 与 GitHub Releases 侧载同价——开放问题 #1，见路线图）。
   - iOS：买断 $4.99（含全部功能）。
+  - 桌面 CLI：免费开源（开发与重度用户载体）。
   - **Pro 订阅 $1.99/月 或 $14.99/年**：端到端云同步、诊断历史云端留存、Mesh 超过 3 名成员、规则建议高级模型更新。**原则：联网功能才收费，单机功能永不付费墙。**
-- **发行渠道**：iOS 全球 App Store（**不含中国大陆区**）+ TestFlight 公测；macOS Developer ID 签名直分发；Windows 自签名 + Scoop/Winget；Android GitHub Releases / Play（视审核）。
+- **发行渠道**：
+  - Android：GitHub Releases 侧载内测（M1，免审核快速迭代）→ Google Play 全球（M3，不含中国大陆区）
+  - iOS：TestFlight 公测（M2）→ 全球 App Store（M3，不含中国大陆区）
+  - 桌面 CLI：macOS / Windows / Linux 直接下载
 - **法律姿态**：工具中立、不内置任何服务端资源、不在中国区发行；App Store VPN 类目按 5.4 条款准备完整材料（隐私政策、日志政策）。
 
 ## 10. 成功指标

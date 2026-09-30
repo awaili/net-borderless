@@ -95,8 +95,11 @@ TUN 包 → NAT 表还原五元组
 - macOS：System Extension + Developer ID 分发（不走 MAS，避免沙盒限制 NE 能力）。
 - Windows：WinTUN + 服务进程，UI 托盘常驻。
 
-### Android
+### Android（M1，首个移动端交付）
 - VpnService + 前台服务；配置加密走 Keystore。
+- 核心编译为 `aarch64-linux-android` 动态库，uni-FFI/JNI 绑定（FFI 边界在 M0 冻结，见 docs/05 §4）。
+- 移动端 UX（信息架构/向导/诊断交互）在 Android 上定型，iOS 继承——降低双端返工。
+- 厂商省电策略适配（MIUI/EMUI 等）：前台服务 + 白名单引导 + Doze 下探活降频。
 
 ## 6. 存储设计
 

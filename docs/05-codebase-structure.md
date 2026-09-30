@@ -30,9 +30,9 @@ shadowrocket-copy/                # Aegis monorepo
 │   └── aegis                    # 二进制：CLI + 无头守护进程（聚合上述全部）
 │
 ├── apps/                        # ── 平台 UI 壳（薄，仅做展示与交互）──
-│   ├── desktop/                 # M1：Tauri（macOS + Windows）
+│   ├── android/                 # M1：VpnService + uni-FFI（首个移动端交付，移动 UX 定型场）
 │   ├── ios/                     # M2：App + Packet Tunnel Provider
-│   └── android/                 # 2.0
+│   └── desktop/                 # 1.x 可选：Tauri（macOS + Windows）；1.0 桌面仅交付 CLI
 │
 ├── presets/                     # 示例配置 / 规则模板（首次向导用）
 │
@@ -85,9 +85,9 @@ inbound/tun ─→ dns(嗅探) ─→ rules ─→ router(策略组) ─→ outb
 
 ## 4. 平台壳（apps/）
 
-- **apps/desktop**（M1，Tauri）：前端 TS + UI 仅通过 `aegis-api`（127.0.0.1 + token）与核心通信。核心以系统服务运行，UI 退出网络不断（PRD/架构约定）。
+- **apps/android**（M1，首个移动端交付）：`VpnService` + 前台服务，核心编译为 `aarch64-linux-android` 动态库经 uni-FFI 绑定；凭据走 Keystore。分发 GitHub Releases 侧载内测。移动端 UX（信息架构/向导/诊断交互）在此定型，iOS 继承。
 - **apps/ios**（M2）：Xcode 工程内嵌 `aegis-tun`（apple 模块编译出的 staticlib）为 Packet Tunnel Provider 扩展；主 App 与扩展通过 App Group + 本地 API 通信。Rust 静态库走 `cargo build --target aarch64-apple-ios` + `cbindgen` 生成 FFI 头。
-- **apps/android**（2.0）：`VpnService` + uni-FFI/JNI 绑定，同核心。
+- **apps/desktop**（1.x 可选）：Tauri 壳，仅通过 `aegis-api`（127.0.0.1 + token）与核心通信。核心以系统服务运行，UI 退出网络不断（PRD/架构约定）。1.0 阶段桌面仅交付 CLI。
 
 ## 5. 约定
 
